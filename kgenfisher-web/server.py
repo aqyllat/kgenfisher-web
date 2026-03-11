@@ -278,18 +278,49 @@ app.add_middleware(
 
 @app.post("/api/auth/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.username == user.username).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    
-    hashed_password = get_password_hash(user.password)
-    new_user = User(username=user.username, password_hash=hashed_password)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    access_token = create_access_token(data={"sub": new_user.username})
-    return {"access_token": access_token, "token_type": "bearer", "username": new_user.username}
+    import traceback
+    try:
+        db_user = db.query(User).filter(User.username == user.username).first()
+        if db_user:
+            raise HTTPException(status_code=400, detail="Username already registered")
+        
+        hashed_password = get_password_hash(user.password)
+        new_user = User(username=user.username, password_hash=hashed_password)
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        
+        access_token = create_access_token(data={"sub": new_user.username})
+        return {"access_token": access_token, "token_type": "bearer", "username": new_user.username}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
+
+@app.get("/api/debug")
+def debug_check():
+    import traceback
+    results = {}
+    # Test 1: DB path
+    from database import DB_FILE, DATABASE_URL
+    results["db_file"] = DB_FILE
+    results["db_url"] = DATABASE_URL
+    # Test 2: bcrypt
+    try:
+        h = get_password_hash("test123")
+        results["bcrypt"] = "OK: " + h[:20] + "..."
+    except Exception as e:
+        results["bcrypt"] = f"FAIL: {e}"
+    # Test 3: DB write
+    try:
+        db = next(get_db())
+        from sqlalchemy import text
+        db.execute(text("SELECT 1"))
+        results["db_read"] = "OK"
+    except Exception as e:
+        results["db_read"] = f"FAIL: {e}\n{traceback.format_exc()}"
+    return results
 
 
 @app.post("/api/auth/login")
