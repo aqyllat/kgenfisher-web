@@ -5,19 +5,15 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from passlib.context import CryptContext
 import jwt
 
-# -- Database Setup --
+# ── Database Setup ──
 
 # On Railway, use /tmp/ because the app directory may be read-only
-if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
-        DB_FILE = "/tmp/kgenfisher.db"
-else:
-        # On Railway, use /tmp/ because the app directory may be read-only
 if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
     DB_FILE = "/tmp/kgenfisher.db"
 else:
     DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kgenfisher.db")
 
-    DATABASE_URL = f"sqlite:///{DB_FILE}"
+DATABASE_URL = f"sqlite:///{DB_FILE}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -51,10 +47,7 @@ class User(Base):
     username = Column(String(50), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-    # Relationships
     accounts = relationship("KGenAccount", back_populates="owner", cascade="all, delete-orphan")
-
 
 class KGenAccount(Base):
     __tablename__ = "kgen_accounts"
@@ -63,13 +56,9 @@ class KGenAccount(Base):
     bearer_token = Column(Text, nullable=False)
     refresh_token = Column(Text, nullable=True)
     added_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-    # Cache fields (updated frequently by the bot, not critical if lost)
     username = Column(String(100), nullable=True)
     points = Column(Integer, default=0)
-    is_valid = Column(Integer, default=1)  # 1 = True, 0 = False
-
-    # Relationships
+    is_valid = Column(Integer, default=1)
     owner = relationship("User", back_populates="accounts")
 
 # Create tables
