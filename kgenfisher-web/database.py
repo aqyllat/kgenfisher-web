@@ -2,16 +2,12 @@ import os
 import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-import bcrypt
+from passlib.context import CryptContext
 import jwt
 
 # ── Database Setup ──
 
-# On Railway, use /tmp/ because the app directory may be read-only
-if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
-    DB_FILE = "/tmp/kgenfisher.db"
-else:
-    DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kgenfisher.db")
+DB_FILE = os.path.join(os.path.dirname(__file__), "kgenfisher.db")
 DATABASE_URL = f"sqlite:///{DB_FILE}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -20,16 +16,16 @@ Base = declarative_base()
 
 # ── Auth Setup ──
 
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = "kgenfisher_super_secret_key_change_in_production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
 def verify_password(plain_password, hashed_password):
-    # bcrypt limits to 72 bytes. We safely encode and truncate.
-    return bcrypt.checkpw(plain_password.encode("utf-8")[:72], hashed_password.encode("utf-8"))
+    return pwd_context.verify(plain_password, hashed_password)
 
 def get_password_hash(password):
-    return bcrypt.hashpw(password.encode("utf-8")[:72], bcrypt.gensalt()).decode("utf-8")
+    return pwd_context.hash(password)
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -63,6 +59,8 @@ class KGenAccount(Base):
     username = Column(String(100), nullable=True)
     points = Column(Integer, default=0)
     is_valid = Column(Integer, default=1)  # 1 = True, 0 = False
+    twitter = Column(Integer, default=0)   # 1 = Connected
+    discord = Column(Integer, default=0)   # 1 = Connected
 
     # Relationships
     owner = relationship("User", back_populates="accounts")

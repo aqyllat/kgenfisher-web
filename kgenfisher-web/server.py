@@ -219,22 +219,43 @@ def run_swap_worker(user_id: int, target_bearers: List[str]):
 
 def check_points_worker(user_id: int, target_bearers: List[str]):
     bot_state.set(user_id, running=True, action="check", total=len(target_bearers), progress=0)
+    from kgen_api_lib import quick_check_social
     
-    for i, bearer in enumerate(target_bearers):
-        bot_state.set(user_id, progress=i + 1)
-        label = f"#{i+1}"
-        _log = _make_log(user_id, label)
+    db = next(get_db())
+    try:
+        for i, bearer in enumerate(target_bearers):
+            bot_state.set(user_id, progress=i + 1)
+            label = f"#{i+1}"
+            _log = _make_log(user_id, label)
+            
+            try:
+                if not is_token_valid(bearer):
+                    _log("Token expired", "warning")
+                    continue
+                profile = get_profile(bearer)
+                bal = get_game_balance(bearer)
+                socials = quick_check_social([bearer])
+                
+                uname = profile.get('username', '?')
+                kp = bal.get('k_point', 0)
+                tw = '✓' if socials.get('TWITTER') else '✗'
+                dc = '✓' if socials.get('DISCORD') else '✗'
+                
+                _log(f"{uname} — KP: {kp:,} | TW: {tw} | DC: {dc}", "success")
+                
+                # Update cache in DB
+                acc = db.query(KGenAccount).filter(KGenAccount.bearer_token == bearer, KGenAccount.user_id == user_id).first()
+                if acc:
+                    acc.username = uname
+                    acc.points = kp
+                    acc.twitter = 1 if socials.get('TWITTER') else 0
+                    acc.discord = 1 if socials.get('DISCORD') else 0
+                    db.commit()
+            except Exception as e:
+                _log(f"Error: {e}", "error")
+    finally:
+        db.close()
         
-        try:
-            if not is_token_valid(bearer):
-                _log("Token expired", "warning")
-                continue
-            profile = get_profile(bearer)
-            bal = get_game_balance(bearer)
-            _log(f"{profile.get('username', '?')} — K-Points: {bal.get('k_point', 0):,}", "success")
-        except Exception as e:
-            _log(f"Error: {e}", "error")
-    
     bot_state.set(user_id, running=False)
 
 
@@ -261,6 +282,22 @@ class AddAccountRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Auto-migrate SQLite schema
+    try:
+        import sqlite3
+        db_file = os.path.join(os.path.dirname(__file__), "kgenfisher.db")
+        if os.path.exists(db_file):
+            conn = sqlite3.connect(db_file)
+            c = conn.cursor()
+            try: c.execute("ALTER TABLE kgen_accounts ADD COLUMN twitter INTEGER DEFAULT 0")
+            except: pass
+            try: c.execute("ALTER TABLE kgen_accounts ADD COLUMN discord INTEGER DEFAULT 0")
+            except: pass
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        print(f"Migration error: {e}")
+
     log_mgr.set_loop(asyncio.get_event_loop())
     yield
 
@@ -274,55 +311,143 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ── PUBLIC Proxy Endpoints (No Auth Required) ──
+# These run on Railway's clean IP to bypass KGen's IP-level blocking
+
+import requests as http_requests
+
+KGEN_BASE = "https://prod-api-backend.kgen.io"
+KGEN_REDIRECT_URI = "https://prod-api-backend.kgen.io/social-auth/redirect-to-page"
+KGEN_GOOGLE_CLIENT_ID = "370849037649-pho1nskdq7jlj6alb8cudmsq6u3fg4bl.apps.googleusercontent.com"
+
+
+class ExchangeCodeRequest(BaseModel):
+    code: str
+    redirect_uri: Optional[str] = None
+
+
+@app.post("/api/exchange-code")
+def api_exchange_code(req: ExchangeCodeRequest):
+    """
+    Proxy endpoint: tuker Google OAuth code jadi KGen token.
+    Jalan di Railway server IP = bypass IP blocking.
+    """
+    redirect_uri = req.redirect_uri or KGEN_REDIRECT_URI
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Source": "website",
+        "Origin": "https://engage.kgen.io",
+        "Referer": "https://engage.kgen.io/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+    }
+    payload = {
+        "code": req.code,
+        "provider": "GOOGLE",
+        "platform": "WEB",
+        "emailOptIn": True,
+        "redirectUri": redirect_uri,
+    }
+
+    try:
+        resp = http_requests.post(
+            f"{KGEN_BASE}/oauth/authenticate?source=website",
+            headers=headers, json=payload, timeout=20
+        )
+
+        if resp.ok:
+            raw = resp.json()
+            data = raw.get("data", raw)
+            return {
+                "success": True,
+                "accessToken": data.get("accessToken") or data.get("token") or raw.get("token"),
+                "refreshToken": data.get("refreshToken") or raw.get("refreshToken"),
+                "idToken": data.get("idToken") or raw.get("idToken"),
+                "raw": raw,
+            }
+        else:
+            return {
+                "success": False,
+                "status": resp.status_code,
+                "error": resp.text[:500],
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/google-oauth-url")
+def api_google_oauth_url(state: str = ""):
+    """Return the Google OAuth URL for KGen registration."""
+    import urllib.parse
+    params = urllib.parse.urlencode({
+        "access_type": "offline",
+        "client_id": KGEN_GOOGLE_CLIENT_ID,
+        "include_granted_scopes": "true",
+        "prompt": "consent",
+        "redirect_uri": KGEN_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
+        "state": state or "https://engage.kgen.io/?provider=GOOGLE&platform=WEB&emailOptIn=true",
+    })
+    return {"url": f"https://accounts.google.com/o/oauth2/v2/auth?{params}"}
+
+
+@app.post("/api/verify-token")
+def api_verify_token(req: AddAccountRequest):
+    """Verify a KGen bearer token from Railway's clean IP."""
+    headers = {
+        "Authorization": f"Bearer {req.bearer}",
+        "Accept": "application/json",
+        "Source": "website",
+    }
+    try:
+        resp = http_requests.get(f"{KGEN_BASE}/users/me/profile", headers=headers, timeout=15)
+        if resp.ok:
+            data = resp.json()
+            return {
+                "valid": True,
+                "username": data.get("username", data.get("displayName", "?")),
+                "email": data.get("email", data.get("emailId", "?")),
+                "id": data.get("id", "?"),
+            }
+        return {"valid": False, "status": resp.status_code, "error": resp.text[:300]}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
+@app.post("/api/refresh-token")
+def api_refresh_token_endpoint(refresh_token: str):
+    """Refresh a KGen token from Railway's clean IP."""
+    try:
+        resp = http_requests.get(
+            f"{KGEN_BASE}/authentication/token/refresh?refresh_token={refresh_token}&source=website",
+            timeout=15
+        )
+        if resp.ok:
+            return {"success": True, **resp.json()}
+        return {"success": False, "status": resp.status_code}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # ── Auth Routes ──
 
 @app.post("/api/auth/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
-    import traceback
-    try:
-        db_user = db.query(User).filter(User.username == user.username).first()
-        if db_user:
-            raise HTTPException(status_code=400, detail="Username already registered")
-        
-        # bcrypt limits passwords to 72 bytes. Truncate it if necessary.
-        pwd_truncated = user.password[:72]
-        hashed_password = get_password_hash(pwd_truncated)
-        new_user = User(username=user.username, password_hash=hashed_password)
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
-        
-        access_token = create_access_token(data={"sub": new_user.username})
-        return {"access_token": access_token, "token_type": "bearer", "username": new_user.username}
-    except HTTPException:
-        raise
-    except Exception as e:
-        return {"error": str(e), "traceback": traceback.format_exc()}
-
-
-@app.get("/api/debug")
-def debug_check():
-    import traceback
-    results = {}
-    # Test 1: DB path
-    from database import DB_FILE, DATABASE_URL
-    results["db_file"] = DB_FILE
-    results["db_url"] = DATABASE_URL
-    # Test 2: bcrypt
-    try:
-        h = get_password_hash("test123")
-        results["bcrypt"] = "OK: " + h[:20] + "..."
-    except Exception as e:
-        results["bcrypt"] = f"FAIL: {e}"
-    # Test 3: DB write
-    try:
-        db = next(get_db())
-        from sqlalchemy import text
-        db.execute(text("SELECT 1"))
-        results["db_read"] = "OK"
-    except Exception as e:
-        results["db_read"] = f"FAIL: {e}\n{traceback.format_exc()}"
-    return results
+    db_user = db.query(User).filter(User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    new_user = User(username=user.username, password_hash=hashed_password)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    access_token = create_access_token(data={"sub": new_user.username})
+    return {"access_token": access_token, "token_type": "bearer", "username": new_user.username}
 
 
 @app.post("/api/auth/login")
@@ -358,6 +483,8 @@ def api_list_accounts(current_user: User = Depends(get_current_user), db: Sessio
             "valid": bool(acc.is_valid) if acc.is_valid is not None else None,
             "username": acc.username,
             "points": acc.points,
+            "twitter": bool(acc.twitter),
+            "discord": bool(acc.discord),
         })
     return {"accounts": result, "total": len(result)}
 
@@ -369,13 +496,18 @@ def api_check_account(acc_id: int, current_user: User = Depends(get_current_user
         raise HTTPException(status_code=404, detail="Account not found")
         
     try:
+        from kgen_api_lib import quick_check_social
         valid = is_token_valid(acc.bearer_token)
         acc.is_valid = 1 if valid else 0
         if valid:
             profile = get_profile(acc.bearer_token)
             bal = get_game_balance(acc.bearer_token)
+            socials = quick_check_social([acc.bearer_token])
+            
             acc.username = profile.get("username", "?")
             acc.points = bal.get("k_point", 0)
+            acc.twitter = 1 if socials.get("TWITTER") else 0
+            acc.discord = 1 if socials.get("DISCORD") else 0
             
             db.commit()
             return {
@@ -383,6 +515,8 @@ def api_check_account(acc_id: int, current_user: User = Depends(get_current_user
                 "valid": True,
                 "username": acc.username,
                 "points": acc.points,
+                "twitter": bool(acc.twitter),
+                "discord": bool(acc.discord),
             }
         else:
             db.commit()
