@@ -314,12 +314,55 @@ app.add_middleware(
 
 # ── PUBLIC Proxy Endpoints (No Auth Required) ──
 # These run on Railway's clean IP to bypass KGen's IP-level blocking
+# Using curl_cffi to impersonate Chrome's TLS fingerprint and bypass Cloudflare
 
+from curl_cffi import requests as cffi_requests
 import requests as http_requests
 
 KGEN_BASE = "https://prod-api-backend.kgen.io"
 KGEN_REDIRECT_URI = "https://prod-api-backend.kgen.io/social-auth/redirect-to-page"
 KGEN_GOOGLE_CLIENT_ID = "370849037649-pho1nskdq7jlj6alb8cudmsq6u3fg4bl.apps.googleusercontent.com"
+
+BROWSER_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/json",
+    "Source": "website",
+    "Origin": "https://engage.kgen.io",
+    "Referer": "https://engage.kgen.io/",
+    "Sec-Ch-Ua": '"Chromium";v="145", "Google Chrome";v="145", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "cross-site",
+}
+
+
+def kgen_post(url, json_data=None, extra_headers=None, timeout=20):
+    """POST to KGen API using curl_cffi (Chrome impersonation) to bypass Cloudflare."""
+    headers = {**BROWSER_HEADERS}
+    if extra_headers:
+        headers.update(extra_headers)
+    try:
+        resp = cffi_requests.post(url, json=json_data, headers=headers, timeout=timeout, impersonate="chrome")
+        return resp
+    except Exception as e:
+        print(f"[kgen_post] Error: {e}")
+        raise
+
+
+def kgen_get(url, extra_headers=None, timeout=15):
+    """GET from KGen API using curl_cffi (Chrome impersonation) to bypass Cloudflare."""
+    headers = {**BROWSER_HEADERS}
+    if extra_headers:
+        headers.update(extra_headers)
+    try:
+        resp = cffi_requests.get(url, headers=headers, timeout=timeout, impersonate="chrome")
+        return resp
+    except Exception as e:
+        print(f"[kgen_get] Error: {e}")
+        raise
 
 
 class ExchangeCodeRequest(BaseModel):
@@ -331,18 +374,10 @@ class ExchangeCodeRequest(BaseModel):
 def api_exchange_code(req: ExchangeCodeRequest):
     """
     Proxy endpoint: tuker Google OAuth code jadi KGen token.
-    Jalan di Railway server IP = bypass IP blocking.
+    Jalan di Railway server IP + Chrome TLS fingerprint = bypass Cloudflare + IP blocking.
     """
     redirect_uri = req.redirect_uri or KGEN_REDIRECT_URI
 
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Source": "website",
-        "Origin": "https://engage.kgen.io",
-        "Referer": "https://engage.kgen.io/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-    }
     payload = {
         "code": req.code,
         "provider": "GOOGLE",
@@ -352,9 +387,9 @@ def api_exchange_code(req: ExchangeCodeRequest):
     }
 
     try:
-        resp = http_requests.post(
+        resp = kgen_post(
             f"{KGEN_BASE}/oauth/authenticate?source=website",
-            headers=headers, json=payload, timeout=20
+            json_data=payload,
         )
 
         if resp.ok:
@@ -396,14 +431,12 @@ def api_google_oauth_url(state: str = ""):
 
 @app.post("/api/verify-token")
 def api_verify_token(req: AddAccountRequest):
-    """Verify a KGen bearer token from Railway's clean IP."""
-    headers = {
-        "Authorization": f"Bearer {req.bearer}",
-        "Accept": "application/json",
-        "Source": "website",
-    }
+    """Verify a KGen bearer token from Railway's clean IP (bypasses Cloudflare)."""
     try:
-        resp = http_requests.get(f"{KGEN_BASE}/users/me/profile", headers=headers, timeout=15)
+        resp = kgen_get(
+            f"{KGEN_BASE}/users/me/profile",
+            extra_headers={"Authorization": f"Bearer {req.bearer}"},
+        )
         if resp.ok:
             data = resp.json()
             return {
@@ -419,11 +452,10 @@ def api_verify_token(req: AddAccountRequest):
 
 @app.post("/api/refresh-token")
 def api_refresh_token_endpoint(refresh_token: str):
-    """Refresh a KGen token from Railway's clean IP."""
+    """Refresh a KGen token from Railway's clean IP (bypasses Cloudflare)."""
     try:
-        resp = http_requests.get(
+        resp = kgen_get(
             f"{KGEN_BASE}/authentication/token/refresh?refresh_token={refresh_token}&source=website",
-            timeout=15
         )
         if resp.ok:
             return {"success": True, **resp.json()}
