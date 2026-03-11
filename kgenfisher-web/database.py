@@ -5,10 +5,14 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from passlib.context import CryptContext
 import jwt
 
-# ── Database Setup ──
+# -- Database Setup --
 
-DB_FILE = os.path.join(os.path.dirname(__file__), "kgenfisher.db")
-DATABASE_URL = f"sqlite:///{DB_FILE}"
+# On Railway, use /tmp/ because the app directory may be read-only
+if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+        DB_FILE = "/tmp/kgenfisher.db"
+else:
+        DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kgenfisher.db")
+    DATABASE_URL = f"sqlite:///{DB_FILE}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
