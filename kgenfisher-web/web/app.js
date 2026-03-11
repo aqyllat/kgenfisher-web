@@ -144,6 +144,8 @@ function renderAccounts() {
                       acc.valid === false ? '<span class="badge badge-expired">Expired</span>' :
                       '<span class="badge badge-unknown">Unknown</span>'}
                     ${acc.has_refresh ? '<span class="badge badge-refresh">RT</span>' : ''}
+                    ${acc.twitter ? '<span class="badge" style="background:#1da1f2;color:white;margin-left:2px;" title="Twitter Connected">🐦</span>' : ''}
+                    ${acc.discord ? '<span class="badge" style="background:#5865f2;color:white;margin-left:2px;" title="Discord Connected">👾</span>' : ''}
                 </div>
                 <div class="account-meta">${acc.bearer_short}</div>
             </div>
@@ -215,6 +217,78 @@ function hideAddModal() {
     document.getElementById('addModal').style.display = 'none';
     document.getElementById('inputBearer').value = '';
     document.getElementById('inputRefresh').value = '';
+    if (document.getElementById('inputGoogleUrl')) {
+        document.getElementById('inputGoogleUrl').value = '';
+        document.getElementById('googlePasteArea').style.display = 'none';
+        document.getElementById('btnGoogleLogin').style.display = 'block';
+    }
+}
+
+async function openGoogleAuth() {
+    try {
+        const res = await api('/api/google-oauth-url');
+        if (res.url) {
+            window.open(res.url, '_blank');
+            document.getElementById('googlePasteArea').style.display = 'block';
+            document.getElementById('btnGoogleLogin').style.display = 'none';
+        }
+    } catch (e) {
+        addLogEntry('Failed to get Google URL: ' + e.message, 'error');
+    }
+}
+
+async function submitGoogleUrl() {
+    const url = document.getElementById('inputGoogleUrl').value.trim();
+    if (!url) return;
+    
+    // Extract code
+    let code = url;
+    if (url.includes('code=')) {
+        try {
+            const parsed = new URL(url);
+            code = parsed.searchParams.get('code');
+        } catch(e) {}
+    } else if (url.startsWith('4/') || url.startsWith('4%2F')) {
+        code = decodeURIComponent(url);
+    }
+    
+    // Replace %2F if present
+    code = code.replace(/%2F/g, '/');
+    
+    if (!code) {
+        addLogEntry('Invalid Google URL/Code', 'error');
+        return;
+    }
+    
+    addLogEntry('Exchanging Google Code via Proxy...', 'info');
+    document.getElementById('inputGoogleUrl').disabled = true;
+    
+    try {
+        // Exchange code via Railway proxy (clean IP)
+        const res = await fetch(`${API}/api/exchange-code`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code })
+        });
+        const data = await res.json();
+        
+        if (data.success && data.accessToken) {
+            // Save to DB
+            await api('/api/accounts', 'POST', { 
+                bearer: data.accessToken, 
+                refresh_token: data.refreshToken || null 
+            });
+            hideAddModal();
+            refreshAccounts();
+            addLogEntry('Google Login Successful! Account added.', 'success');
+        } else {
+            addLogEntry(`Google Login Failed: ${data.error || 'Unknown error'}`, 'error');
+        }
+    } catch (e) {
+        addLogEntry(`Google Login Error: ${e.message}`, 'error');
+    } finally {
+        document.getElementById('inputGoogleUrl').disabled = false;
+    }
 }
 
 async function addAccount() {
