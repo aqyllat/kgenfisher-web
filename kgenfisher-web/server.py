@@ -284,7 +284,9 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
         if db_user:
             raise HTTPException(status_code=400, detail="Username already registered")
         
-        hashed_password = get_password_hash(user.password)
+        # bcrypt limits passwords to 72 bytes. Truncate it if necessary.
+        pwd_truncated = user.password[:72]
+        hashed_password = get_password_hash(pwd_truncated)
         new_user = User(username=user.username, password_hash=hashed_password)
         db.add(new_user)
         db.commit()
