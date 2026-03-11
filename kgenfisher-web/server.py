@@ -314,55 +314,79 @@ app.add_middleware(
 
 # ── PUBLIC Proxy Endpoints (No Auth Required) ──
 # These run on Railway's clean IP to bypass KGen's IP-level blocking
-# Using curl_cffi to impersonate Chrome's TLS fingerprint and bypass Cloudflare
+# Using Playwright (real headless Chrome) to bypass Cloudflare — CF can't block a real browser!
 
-from curl_cffi import requests as cffi_requests
 import requests as http_requests
 
 KGEN_BASE = "https://prod-api-backend.kgen.io"
 KGEN_REDIRECT_URI = "https://prod-api-backend.kgen.io/social-auth/redirect-to-page"
 KGEN_GOOGLE_CLIENT_ID = "370849037649-pho1nskdq7jlj6alb8cudmsq6u3fg4bl.apps.googleusercontent.com"
 
-BROWSER_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Content-Type": "application/json",
-    "Source": "website",
-    "Origin": "https://engage.kgen.io",
-    "Referer": "https://engage.kgen.io/",
-    "Sec-Ch-Ua": '"Chromium";v="145", "Google Chrome";v="145", "Not-A.Brand";v="99"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "cross-site",
-}
 
+def kgen_browser_fetch(url, method="POST", json_data=None, bearer=None):
+    """
+    Make KGen API call through a REAL headless Chrome browser.
+    Cloudflare can't block this because it's a genuine browser with real JS engine + TLS.
+    """
+    from playwright.sync_api import sync_playwright
+    import json as _json
 
-def kgen_post(url, json_data=None, extra_headers=None, timeout=20):
-    """POST to KGen API using curl_cffi (Chrome impersonation) to bypass Cloudflare."""
-    headers = {**BROWSER_HEADERS}
-    if extra_headers:
-        headers.update(extra_headers)
-    try:
-        resp = cffi_requests.post(url, json=json_data, headers=headers, timeout=timeout, impersonate="chrome")
-        return resp
-    except Exception as e:
-        print(f"[kgen_post] Error: {e}")
-        raise
+    result = None
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+        )
+        page = ctx.new_page()
 
+        # Navigate to KGen's engage page first to get Cloudflare cookies
+        try:
+            page.goto("https://engage.kgen.io", wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(2000)  # Let CF challenge resolve
+        except:
+            pass  # Even if it fails, try the fetch anyway
 
-def kgen_get(url, extra_headers=None, timeout=15):
-    """GET from KGen API using curl_cffi (Chrome impersonation) to bypass Cloudflare."""
-    headers = {**BROWSER_HEADERS}
-    if extra_headers:
-        headers.update(extra_headers)
-    try:
-        resp = cffi_requests.get(url, headers=headers, timeout=timeout, impersonate="chrome")
-        return resp
-    except Exception as e:
-        print(f"[kgen_get] Error: {e}")
-        raise
+        # Build the fetch JS
+        headers_obj = {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Source": "website",
+        }
+        if bearer:
+            headers_obj["Authorization"] = f"Bearer {bearer}"
+
+        fetch_script = """
+        async (args) => {
+            try {
+                const opts = {
+                    method: args.method,
+                    headers: args.headers,
+                    credentials: 'omit',
+                };
+                if (args.body && args.method !== 'GET') {
+                    opts.body = JSON.stringify(args.body);
+                }
+                const resp = await fetch(args.url, opts);
+                const text = await resp.text();
+                let body = null;
+                try { body = JSON.parse(text); } catch(e) { body = text; }
+                return { ok: resp.ok, status: resp.status, body: body };
+            } catch(e) {
+                return { ok: false, status: 0, body: e.toString() };
+            }
+        }
+        """
+
+        result = page.evaluate(fetch_script, {
+            "url": url,
+            "method": method,
+            "headers": headers_obj,
+            "body": json_data,
+        })
+
+        browser.close()
+
+    return result
 
 
 class ExchangeCodeRequest(BaseModel):
@@ -374,7 +398,7 @@ class ExchangeCodeRequest(BaseModel):
 def api_exchange_code(req: ExchangeCodeRequest):
     """
     Proxy endpoint: tuker Google OAuth code jadi KGen token.
-    Jalan di Railway server IP + Chrome TLS fingerprint = bypass Cloudflare + IP blocking.
+    Jalan di Railway + Real Chromium browser = bypass Cloudflare + IP blocking.
     """
     redirect_uri = req.redirect_uri or KGEN_REDIRECT_URI
 
@@ -387,13 +411,16 @@ def api_exchange_code(req: ExchangeCodeRequest):
     }
 
     try:
-        resp = kgen_post(
+        result = kgen_browser_fetch(
             f"{KGEN_BASE}/oauth/authenticate?source=website",
+            method="POST",
             json_data=payload,
         )
 
-        if resp.ok:
-            raw = resp.json()
+        if result and result.get("ok"):
+            raw = result.get("body", {})
+            if isinstance(raw, str):
+                return {"success": False, "error": raw[:500]}
             data = raw.get("data", raw)
             return {
                 "success": True,
@@ -403,12 +430,17 @@ def api_exchange_code(req: ExchangeCodeRequest):
                 "raw": raw,
             }
         else:
+            body = result.get("body", "") if result else "No result"
+            status = result.get("status", 0) if result else 0
+            error_text = body if isinstance(body, str) else str(body)
             return {
                 "success": False,
-                "status": resp.status_code,
-                "error": resp.text[:500],
+                "status": status,
+                "error": error_text[:500],
             }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
 
@@ -431,35 +463,40 @@ def api_google_oauth_url(state: str = ""):
 
 @app.post("/api/verify-token")
 def api_verify_token(req: AddAccountRequest):
-    """Verify a KGen bearer token from Railway's clean IP (bypasses Cloudflare)."""
+    """Verify a KGen bearer token via real browser (bypasses Cloudflare)."""
     try:
-        resp = kgen_get(
+        result = kgen_browser_fetch(
             f"{KGEN_BASE}/users/me/profile",
-            extra_headers={"Authorization": f"Bearer {req.bearer}"},
+            method="GET",
+            bearer=req.bearer,
         )
-        if resp.ok:
-            data = resp.json()
-            return {
-                "valid": True,
-                "username": data.get("username", data.get("displayName", "?")),
-                "email": data.get("email", data.get("emailId", "?")),
-                "id": data.get("id", "?"),
-            }
-        return {"valid": False, "status": resp.status_code, "error": resp.text[:300]}
+        if result and result.get("ok"):
+            data = result.get("body", {})
+            if isinstance(data, dict):
+                return {
+                    "valid": True,
+                    "username": data.get("username", data.get("displayName", "?")),
+                    "email": data.get("email", data.get("emailId", "?")),
+                    "id": data.get("id", "?"),
+                }
+        return {"valid": False, "status": result.get("status", 0) if result else 0}
     except Exception as e:
         return {"valid": False, "error": str(e)}
 
 
 @app.post("/api/refresh-token")
 def api_refresh_token_endpoint(refresh_token: str):
-    """Refresh a KGen token from Railway's clean IP (bypasses Cloudflare)."""
+    """Refresh a KGen token via real browser (bypasses Cloudflare)."""
     try:
-        resp = kgen_get(
+        result = kgen_browser_fetch(
             f"{KGEN_BASE}/authentication/token/refresh?refresh_token={refresh_token}&source=website",
+            method="GET",
         )
-        if resp.ok:
-            return {"success": True, **resp.json()}
-        return {"success": False, "status": resp.status_code}
+        if result and result.get("ok"):
+            body = result.get("body", {})
+            if isinstance(body, dict):
+                return {"success": True, **body}
+        return {"success": False, "status": result.get("status", 0) if result else 0}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
