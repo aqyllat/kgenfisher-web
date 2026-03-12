@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KGenFisher Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <div class="logo">⚡ KGenFisher</div>
+            <span class="logo-sub">Dashboard</span>
+        </div>
+        <div class="header-right" style="display: flex; gap: 12px; align-items: center;">
+            <div class="user-badge" id="userBadge" style="display:none">
+                <span id="userName">User</span>
+            </div>
+            <div class="status-badge" id="statusBadge">
+                <span class="status-dot"></span>
+                <span id="statusText">Idle</span>
+            </div>
+            <button class="btn btn-sm btn-ghost" onclick="logout()" id="btnLogout" style="display:none">🚪 Logout</button>
+        </div>
+    </header>
+
+    <!-- Main -->
+    <main class="main">
+        <!-- Left: Accounts + Actions -->
+        <section class="panel panel-left">
+            <!-- Action Buttons -->
+            <div class="action-bar">
+                <button class="btn btn-primary" onclick="runAction('campaigns')" id="btnCampaigns">
+                    🎯 Campaigns
+                </button>
+                <button class="btn btn-accent" onclick="runAction('spin')" id="btnSpin">
+                    🎰 Spin
+                </button>
+                <button class="btn btn-warn" onclick="runAction('swap')" id="btnSwap">
+                    🔄 Swap & WD
+                </button>
+                <button class="btn btn-info" onclick="runAction('check')" id="btnCheck">
+                    📊 Cek Point
+                </button>
+            </div>
+
+            <!-- Select All -->
+            <div class="select-bar">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="selectAll" onchange="toggleSelectAll()" checked />
+                    <span>Select All</span>
+                </label>
+                <button class="btn btn-sm btn-ghost" onclick="refreshAccounts()">🔄 Refresh</button>
+                <button class="btn btn-sm btn-ghost" onclick="showAddModal()">➕ Add Account</button>
+            </div>
+
+            <!-- Account List -->
+            <div class="account-list" id="accountList">
+                <div class="loading">Loading accounts...</div>
+            </div>
+        </section>
+
+        <!-- Right: Log Viewer -->
+        <section class="panel panel-right">
+            <div class="panel-header">
+                <h3>📟 Live Logs</h3>
+                <button class="btn btn-sm btn-ghost" onclick="clearLogs()">Clear</button>
+            </div>
+            <div class="log-viewer" id="logViewer">
+                <div class="log-entry log-info">
+                    <span class="log-time">—</span>
+                    <span class="log-msg">Waiting for action...</span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Add Account Modal -->
+    <div class="modal-overlay" id="addModal" style="display:none">
+        <div class="modal-card">
+            <h3>➕ Add Account</h3>
+            
+            <div style="background: rgba(66, 133, 244, 0.1); border: 1px solid #4285f4; border-radius: 8px; padding: 15px; margin-bottom: 20px; text-align: center;">
+                <p style="margin-top: 0; font-size: 14px; margin-bottom: 12px; color: #eee;">Metode 1: Anti-Ban Google Login 🛡️</p>
+                <button class="btn btn-google" onclick="openGoogleAuth()" id="btnGoogleLogin" style="background: #4285f4; color: white; width: 100%; margin-bottom: 10px; font-weight: bold; border: none;">🔑 1. Login with Google</button>
+                <div id="googlePasteArea" style="display:none; text-align: left; margin-top: 10px; background: #0a0a23; padding: 10px; border-radius: 8px;">
+                    <label style="font-size: 12px; color: #fcb900;">2. Akan error "Site can't be reached". Copy URL dari atas browser lu & paste di sini:</label>
+                    <input type="text" id="inputGoogleUrl" placeholder="http://127.0.0.1:xxx/callback?code=..." style="width: 100%; box-sizing: border-box; padding: 8px; border-radius: 4px; border: 1px solid #444; background: #111; color: white; margin-top: 5px; font-size: 11px;" />
+                    <button class="btn btn-sm" onclick="submitGoogleUrl()" style="width: 100%; margin-top: 8px; background: #2ecc71; color: white; border: none; font-weight: bold;">3. Submit URL / Code</button>
+                </div>
+            </div>
+
+            <hr style="border-color: #333; margin: 20px 0;">
+
+            <p style="font-size: 14px; margin-bottom: 10px; color: #aaa;">Metode 2: Input Token Manual</p>
+            <div class="form-group">
+                <label>Bearer Token</label>
+                <textarea id="inputBearer" placeholder="eyJhbGci..." rows="2"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Refresh Token (optional)</label>
+                <textarea id="inputRefresh" placeholder="eyJhbGci..." rows="1"></textarea>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" onclick="hideAddModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="addAccount()">Add Token</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress Bar -->
+    <div class="progress-bar" id="progressBar" style="display:none">
+        <div class="progress-fill" id="progressFill"></div>
+        <span class="progress-text" id="progressText"></span>
+    </div>
+
+    <!-- Auth Overlay (Login / Register) -->
+    <div class="auth-overlay" id="authOverlay">
+        <div class="auth-card">
+            <div class="logo" style="text-align: center; margin-bottom: 20px; font-size: 28px;">⚡ KGenFisher</div>
+            
+            <div class="auth-tabs">
+                <button class="auth-tab active" onclick="switchAuthTab('login')" id="tabLogin">Login</button>
+                <button class="auth-tab" onclick="switchAuthTab('register')" id="tabRegister">Register</button>
+            </div>
+
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="authUsername" placeholder="your_username" />
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="authPassword" placeholder="••••••••" />
+            </div>
+            
+            <div id="authError" style="color: #ff6b6b; font-size: 12px; margin-bottom: 10px; text-align: center; display: none;"></div>
+
+            <button class="btn btn-primary" style="width: 100%" onclick="submitAuth()" id="btnAuthSubmit">Login</button>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
